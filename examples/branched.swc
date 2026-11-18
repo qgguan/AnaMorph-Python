@@ -1,0 +1,9 @@
+# Synthetic example, coordinates in arbitrary units.
+# id type x y z radius parent
+1 1 0 0 0 1.0 -1
+2 3 1.25 0 0 0.25 1
+3 3 2.25 0 0 0.23 2
+4 3 3.25 0 0 0.20 3
+5 3 4.25 0.4 0 0.16 4
+6 3 3.6 -0.9 0 0.15 4
+7 3 4.0 -1.7 0 0.12 6

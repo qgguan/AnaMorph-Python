@@ -1,0 +1,35 @@
+# Local data, generated meshes and development-only reference builds
+/output/
+/reference-build/
+/toolchain-download/
+/PORT_STATUS.md
+/*_results/
+*.obj
+*.swc
+!/examples/*.swc
+!/tests/fixtures/*.swc
+
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python caches, environments and distributions
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
