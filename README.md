@@ -2,6 +2,10 @@
 
 Based on AnaMorph (https://github.com/NeuroBox3D/AnaMorph).
 
+This project is a Python version derived from the existing
+[AnaMorph](https://github.com/NeuroBox3D/AnaMorph) software, originally written
+in C++.
+
 AnaMorph Python generates triangular neuron surface meshes from SWC morphology
 files. It uses analytic canal surfaces and red-blue surface stitching by default,
 and can save both the original mesh and a postprocessed mesh with a quality
