@@ -24,7 +24,7 @@ class SourceFloatTests(unittest.TestCase):
     def test_render_trig_known_case_and_fallback(self):
         value = 5.487951789725289
         self.assertEqual(x87_sincos(value)[0], -0.7140271141857651)
-        self.assertNotEqual(x87_sincos(value)[0], math.sin(value))
+        # Host libm may agree with the x87-style result on some platforms.
         self.assertEqual(bits(x87_sincos(0.)[0]), bits(0.))
         self.assertEqual(bits(x87_sincos(-0.)[0]), bits(-0.))
         self.assertEqual(x87_sincos(100.), (math.sin(100.), math.cos(100.)))
