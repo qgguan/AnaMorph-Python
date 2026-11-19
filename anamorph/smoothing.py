@@ -49,6 +49,33 @@ def laplacian_smooth(mesh: Mesh, smoothing_factor: float = .5, iterations: int =
     return Mesh(tuple(current), mesh.faces)
 
 
+def _validate_taubin_options(lambda_factor: float = .5, mu_factor: float = -.53, iterations: int = 10):
+    if not all(isfinite(x) for x in (lambda_factor, mu_factor)) or not 0 < lambda_factor <= 1 or not -1 <= mu_factor < 0:
+        raise ValueError("Taubin factors must be finite, with 0 < lambda <= 1 and -1 <= mu < 0")
+    if type(iterations) is not int or iterations < 0:
+        raise ValueError("Taubin iterations must be a non-negative integer")
+
+
+def taubin_smooth(mesh: Mesh, lambda_factor: float = .5, mu_factor: float = -.53,
+                  iterations: int = 10) -> Mesh:
+    """Smooth using paired positive and negative uniform-Laplacian passes.
+
+    Each iteration applies lambda to the current mesh, then mu to the resulting
+    mesh. Vertex connectivity is unchanged. The geometry is not projected and
+    neither volume nor non-self-intersection is guaranteed.
+    """
+    _validate_taubin_options(lambda_factor, mu_factor, iterations)
+    neighbors = _neighbors(mesh)
+    current = mesh.vertices
+    for _ in range(iterations):
+        for factor in (lambda_factor, mu_factor):
+            current = tuple(tuple(current[i][axis] + factor *
+                                  sum(current[j][axis]-current[i][axis] for j in ns)/len(ns)
+                                  for axis in range(3)) if ns else current[i]
+                            for i, ns in enumerate(neighbors))
+    return Mesh(tuple(current), mesh.faces)
+
+
 def _validate_hc_options(alpha: float = 0.4, beta: float = 0.7, iterations: int = 10):
     if not all(isfinite(x) for x in (alpha, beta)) or alpha <= 0 or beta <= alpha:
         raise ValueError("smoothing requires finite 0 < alpha < beta")

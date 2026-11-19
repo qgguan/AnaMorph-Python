@@ -29,7 +29,7 @@ from .mesh import read_obj
 from .swc import read_swc
 from .voxel import generate_voxel_mesh
 from .precondition import precondition
-from .smoothing import hc_smooth, laplacian_smooth, _validate_hc_options
+from .smoothing import hc_smooth, laplacian_smooth, taubin_smooth, _validate_hc_options, _validate_taubin_options
 from .roots import adjust_soma_roots
 from .analysis import approximate_analysis
 from .collapse import greedy_edge_collapse, _validate_collapse_options
@@ -67,6 +67,18 @@ def _add_collapse_arguments(parser):
     parser.add_argument("--collapse-max-collapses", type=int, help="maximum collapse operations (default: 100000)")
     parser.add_argument("--collapse-safety", choices=("safe", "source"),
                         help="conservative checks or source rule (default: safe; source with --postprocess)")
+
+
+def _add_taubin_arguments(parser):
+    parser.add_argument("--taubin-iterations", type=int, help="Taubin iterations (default: 10 when selected)")
+    parser.add_argument("--taubin-lambda", type=float, help="Taubin positive pass factor (default: 0.5)")
+    parser.add_argument("--taubin-mu", type=float, help="Taubin negative pass factor (default: -0.53)")
+
+
+def _taubin_options(args):
+    return {"iterations": 10 if args.taubin_iterations is None else args.taubin_iterations,
+            "lambda_factor": .5 if args.taubin_lambda is None else args.taubin_lambda,
+            "mu_factor": -.53 if args.taubin_mu is None else args.taubin_mu}
 
 
 def _collapse_options(args, enabled, *, default_safety="safe"):
@@ -187,12 +199,24 @@ def main(argv: list[str] | None = None) -> int:
     workflow = sub.add_parser("workflow", help="generate raw and remeshed OBJs with a quality report")
     workflow.add_argument("swc", help="input SWC morphology")
     workflow.add_argument("--output-dir", help="result folder (default: <input name>_results in the current directory)")
-    workflow.add_argument("--isotropic", action="store_true", help="use isotropic remeshing instead of standard postprocessing")
+    workflow_method = workflow.add_mutually_exclusive_group()
+    workflow_method.add_argument("--isotropic", dest="postprocess_method", action="store_const", const="isotropic",
+                                 help="use isotropic remeshing (default)")
+    workflow_method.add_argument("--standard-postprocess", dest="postprocess_method", action="store_const", const="standard",
+                                 help="use source-style edge collapse and HC smoothing")
+    workflow.set_defaults(postprocess_method="isotropic")
+    workflow.add_argument("--smoothing", choices=("none", "hc", "taubin"),
+                          help="smoothing method (default: taubin for isotropic, hc for standard)")
+    _add_taubin_arguments(workflow)
     workflow.add_argument("--target-edge-length", type=float,
-                          help="isotropic target in SWC units (requires --isotropic; default: median neurite radius)")
-    workflow.add_argument("--iterations", type=int, help="isotropic remeshing iterations (default: 5; requires --isotropic)")
+                          help="isotropic target in SWC units (default: median neurite radius)")
+    workflow.add_argument("--iterations", type=int, help="isotropic remeshing iterations (default: 5)")
     workflow.add_argument("--angular-segments", type=int, default=6, help="canal ring segments (default: 6)")
     workflow.add_argument("--soma-refinements", type=int, default=2, help="soma sphere refinements (default: 2)")
+    workflow.add_argument("--soma-blend-width", type=float,
+                          help="junction width in neurite radii (default: 3 for isotropic, 2 for standard; 0 disables)")
+    workflow.add_argument("--soma-blend-method", choices=("blend", "mortar"),
+                          help="junction adjustment (default: mortar for isotropic, blend for standard; mortar is experimental)")
     workflow.add_argument("--match-cpp", action="store_true", help=argparse.SUPPRESS)
     workflow_checks = workflow.add_mutually_exclusive_group()
     workflow_checks.add_argument("--analyze", action="store_true",
@@ -332,6 +356,8 @@ def main(argv: list[str] | None = None) -> int:
     remesh.add_argument("obj")
     remesh.add_argument("output")
     remesh.add_argument("--isotropic", action="store_true", help="use isotropic remeshing instead of standard postprocessing")
+    remesh.add_argument("--smoothing", choices=("hc", "taubin"), help="smoothing method (default: hc after collapse; none for isotropic)")
+    _add_taubin_arguments(remesh)
     remesh.add_argument("--target-edge-length", type=float, help="isotropic target (required with --isotropic)")
     remesh.add_argument("--iterations", type=int, help="isotropic iterations (default: 5; requires --isotropic)")
     postprocess = sub.add_parser("postprocess", help="apply edge collapse or smoothing to an existing OBJ")
@@ -344,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
     postprocess.add_argument("--hc-beta", type=float, default=.7)
     postprocess.add_argument("--laplacian-iterations", type=int, default=0)
     postprocess.add_argument("--laplacian-factor", type=float, default=.5)
+    _add_taubin_arguments(postprocess)
     redblue = sub.add_parser("generate", aliases=["generate-redblue"],
                              help="generate an analytic canal and red-blue neuron mesh (default)")
     redblue.add_argument("swc")
@@ -488,7 +515,11 @@ def main(argv: list[str] | None = None) -> int:
             output_dir = args.output_dir or str(Path.cwd()/(Path(args.swc).stem+"_results"))
             result = run_workflow(args.swc, output_dir, target_edge_length=args.target_edge_length,
                                   iterations=args.iterations, angular_segments=args.angular_segments,
-                                  postprocess_method="isotropic" if args.isotropic else "standard",
+                                  postprocess_method=args.postprocess_method,
+                                  smoothing=args.smoothing, taubin_iterations=args.taubin_iterations,
+                                  taubin_lambda=args.taubin_lambda, taubin_mu=args.taubin_mu,
+                                  soma_blend_width=args.soma_blend_width,
+                                  soma_blend_method=args.soma_blend_method,
                                   soma_refinements=args.soma_refinements, force=args.force, match_cpp=args.match_cpp,
                                   analyze=args.analyze,
                                   check_intersections=not args.skip_intersection_check,
@@ -607,6 +638,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("target edge length and remeshing iterations require --isotropic")
             if args.isotropic and args.target_edge_length is None:
                 raise ValueError("--isotropic requires --target-edge-length for an existing OBJ")
+            taubin_supplied = any(value is not None for value in (args.taubin_iterations, args.taubin_lambda, args.taubin_mu))
+            if args.smoothing != "taubin" and taubin_supplied:
+                raise ValueError("Taubin options require --smoothing taubin")
+            taubin_options = _taubin_options(args)
+            if args.smoothing == "taubin":
+                _validate_taubin_options(**taubin_options)
             print("Warning: remeshing changes the surface and does not check global self-intersections.", file=sys.stderr)
             original = read_obj(args.obj)
             before = original.statistics()
@@ -615,9 +652,16 @@ def main(argv: list[str] | None = None) -> int:
                 settings = {"target": args.target_edge_length, "iterations": args.iterations if args.iterations is not None else 5,
                             "max_operations": 300000}
                 model = isotropic_remesh(original, **settings)
+                if args.smoothing == "taubin":
+                    settings["taubin_smoothing"] = taubin_options
+                    model = taubin_smooth(model, **taubin_options)
+                elif args.smoothing == "hc":
+                    settings["hc_smoothing"] = {"alpha": .4, "beta": .7, "iterations": 10}
+                    model = hc_smooth(model, **settings["hc_smoothing"])
             else:
-                settings = standard_settings()
-                model = standard_postprocess(original)
+                smoothing = args.smoothing or "hc"
+                settings = standard_settings(smoothing=smoothing, taubin_options=taubin_options)
+                model = standard_postprocess(original, smoothing=smoothing, taubin_options=taubin_options)
             after = model.statistics()
             after_edges = mesh_quality(model)["edge_lengths"]
             model.write_obj(args.output)
@@ -632,11 +676,19 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("output path must differ from the input OBJ file")
             if args.hc_iterations < 0 or args.laplacian_iterations < 0:
                 raise ValueError("smoothing iterations must be non-negative")
-            if not args.edge_collapse and not args.hc_iterations and not args.laplacian_iterations:
+            taubin_iterations = args.taubin_iterations or 0
+            if args.taubin_iterations is not None and args.taubin_iterations < 0:
+                raise ValueError("Taubin iterations must be non-negative")
+            if not taubin_iterations and (args.taubin_lambda is not None or args.taubin_mu is not None):
+                raise ValueError("Taubin factors require --taubin-iterations greater than zero")
+            if not args.edge_collapse and not args.hc_iterations and not args.laplacian_iterations and not taubin_iterations:
                 raise ValueError("enable at least one post-processing operation")
             collapse_options = _collapse_options(args, args.edge_collapse)
             if args.hc_iterations:
                 _validate_hc_options(args.hc_alpha, args.hc_beta, args.hc_iterations)
+            taubin_options = _taubin_options(args) if taubin_iterations else None
+            if taubin_options:
+                _validate_taubin_options(**taubin_options)
             print("Warning: post-processing changes the surface and does not check global self-intersections.", file=sys.stderr)
             model = read_obj(args.obj)
             before = model.statistics()
@@ -647,6 +699,8 @@ def main(argv: list[str] | None = None) -> int:
                                          iterations=args.laplacian_iterations)
             if args.hc_iterations:
                 model = hc_smooth(model, alpha=args.hc_alpha, beta=args.hc_beta, iterations=args.hc_iterations)
+            if taubin_options:
+                model = taubin_smooth(model, **taubin_options)
             after = model.statistics()
             model.write_obj(args.output)
             result = {"output": args.output, "vertices": len(model.vertices), "faces": len(model.faces),
@@ -654,7 +708,8 @@ def main(argv: list[str] | None = None) -> int:
                                                "hc_smoothing": {"alpha": args.hc_alpha, "beta": args.hc_beta,
                                                                 "iterations": args.hc_iterations} if args.hc_iterations else None,
                                                "laplacian": {"smoothing_factor": args.laplacian_factor,
-                                                             "iterations": args.laplacian_iterations} if args.laplacian_iterations else None},
+                                                             "iterations": args.laplacian_iterations} if args.laplacian_iterations else None,
+                                               "taubin_smoothing": taubin_options},
                       "change_percent": {"area": 100*(after.area/before.area-1) if before.area else None,
                                          "volume": 100*(after.volume/before.volume-1) if before.volume else None}}
         elif args.command == "generate-individual":

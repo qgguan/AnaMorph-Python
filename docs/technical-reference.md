@@ -77,17 +77,19 @@ area and volume. Existing result files are never overwritten; choose another
 output folder for a new run. Without `--output-dir`, the folder is named
 `<input name>_results` in the current directory.
 
-By default `remeshed.obj` is produced by source-style greedy edge collapse
-(alpha 1.5, lambda 0.125, mu 0.5, depth 5), followed by ten HC smoothing
-iterations (alpha 0.4, beta 0.7). This uses the C++ default parameters and
-topological rule, with a Python limit of 100,000 collapses; the implementations
-can still differ numerically. These operations may substantially change area
-and volume, so compare the raw and processed meshes and the report.
+By default `remeshed.obj` is produced by isotropic remeshing, ten Taubin
+smoothing iterations, and the experimental mortar soma-junction fill, in that
+order. The default target edge length is the median input neurite radius, a
+heuristic. Compare the raw and processed meshes and inspect the report.
 
-To select isotropic remeshing instead:
+Use `--standard-postprocess` to select source-style greedy edge collapse, a
+local soma-junction blend, and HC smoothing. The collapse implementation has a
+Python work limit and can differ numerically from the C++ implementation.
+
+To set an explicit isotropic target:
 
 ```sh
-python -m anamorph workflow path/to/cell.swc --output-dir cell_results --isotropic --target-edge-length 0.4
+python -m anamorph workflow path/to/cell.swc --output-dir cell_results --target-edge-length 0.4
 ```
 
 The analytic workflow also accepts a soma-free SWC component whose root is a
@@ -117,8 +119,9 @@ is incomplete. `--skip-intersection-check` omits the potentially expensive
 numerical mesh checks and records that they were not performed. Neither
 analysis nor numerical checking certifies the mesh, and remeshing changes the
 surface without guaranteeing uniformity.
-Python callers can use `anamorph.workflow.run_workflow`; select the alternative
-with `postprocess_method="isotropic"` and optionally `target_edge_length=0.4`.
+Python callers can use `anamorph.workflow.run_workflow`; set
+`target_edge_length=0.4` to override the default heuristic, or select
+`postprocess_method="standard"` for source-style postprocessing.
 
 Other commands are also available:
 

@@ -30,9 +30,12 @@ from .analytic_mesher import assemble_redblue_neuron
 from .analytic_network import analyze_analytic_partial
 from .mesh_intersections import find_self_intersections
 from .quality import mesh_quality
+from .junction import blend_soma_junctions, fill_and_smooth_soma_junctions
+from .model import prepare_morphology
 from .postprocess import standard_postprocess, standard_settings
 from .redblue import _edge_faces
 from .remesh import isotropic_remesh
+from .smoothing import _validate_taubin_options, hc_smooth, taubin_smooth
 from .swc import read_swc
 
 
@@ -94,13 +97,40 @@ def _readable_report(data):
     lines = ["# Mesh workflow report", "", f"Input: `input.swc` (SHA-256 `{data['input']['sha256']}`)",
              "Meshing method: analytic canal surfaces and red-blue stitching."]
     if remesh["method"] == "standard":
-        lines.extend(["Postprocessing: source-style edge collapse followed by HC smoothing.",
-                      "Edge collapse: alpha 1.5, lambda 0.125, mu 0.5, depth 5; source safety rule.",
-                      "HC smoothing: alpha 0.4, beta 0.7, 10 iterations."])
+        lines.append("Edge collapse: alpha 1.5, lambda 0.125, mu 0.5, depth 5; source safety rule.")
+        if "taubin_smoothing" in remesh:
+            smooth = remesh["taubin_smoothing"]
+            lines.extend(["Postprocessing: source-style edge collapse and Taubin smoothing.",
+                          f"Taubin smoothing: lambda {number(smooth['lambda_factor'])}, mu {number(smooth['mu_factor'])}, "
+                          f"{smooth['iterations']} iterations."])
+        else:
+            lines.extend(["Postprocessing: source-style edge collapse and HC smoothing.",
+                          "HC smoothing: alpha 0.4, beta 0.7, 10 iterations."])
     else:
         lines.extend(["Postprocessing: isotropic remeshing.",
                       f"Target edge length: {number(remesh['target'])} input units ({remesh['target_selection']}).",
                       f"Remeshing iterations: {remesh['iterations']}."])
+        if "taubin_smoothing" in remesh:
+            smooth = remesh["taubin_smoothing"]
+            lines.append(f"Taubin smoothing: lambda {number(smooth['lambda_factor'])}, mu {number(smooth['mu_factor'])}, "
+                         f"{smooth['iterations']} iterations.")
+        elif "hc_smoothing" in remesh:
+            lines.append("HC smoothing: alpha 0.4, beta 0.7, 10 iterations.")
+    blend = settings.get("soma_junction_blend")
+    if blend:
+        if not blend["width_factor"]:
+            lines.append("Soma junction blend: disabled.")
+        else:
+            lines.append(f"Soma junction blend: method {blend.get('method', 'blend')}, width factor {number(blend['width_factor'])}; "
+                         f"{blend['attachments_blended']} of {blend['attachments']} attachments adjusted; "
+                         f"{blend['vertices_moved']} vertices moved; maximum displacement {number(blend['max_displacement'])}; "
+                         f"displacement scale {number(blend['displacement_scale'])}.")
+            lines.append("The junction blend runs after remeshing and " +
+                         ("after smoothing, if smoothing is selected." if blend.get("method") == "mortar" else "before any smoothing."))
+            if blend.get("relaxation_iterations"):
+                lines.append(f"The local fill includes {blend['relaxation_iterations']} local relaxation iterations.")
+        if blend["width_factor"] and blend["attachments_blended"] < blend["attachments"]:
+            lines.append("Some soma attachments had no vertices in the blend region; inspect the mesh or increase resolution.")
     lines.extend([analysis_summary, "", "| Measurement | Raw | Remeshed |", "| --- | ---: | ---: |"])
     for title, key in (("Vertices", "vertices"), ("Faces", "faces"), ("Surface area", "area"),
                        ("Volume", "volume"), ("Boundary edges", "boundary_edges"),
@@ -124,12 +154,13 @@ def _readable_report(data):
 def run_workflow(swc_path, output_dir, *, target_edge_length=None, iterations=None,
                  angular_segments=6, soma_refinements=2, force=False,
                  match_cpp=False, check_intersections=True, analyze=False, progress=None,
-                 postprocess_method="standard"):
+                 postprocess_method="isotropic", smoothing=None, taubin_iterations=None,
+                 taubin_lambda=None, taubin_mu=None, soma_blend_width=None, soma_blend_method=None):
     """Generate raw/remeshed OBJs and a reproducible diagnostic report.
 
-    Existing result files are never overwritten. The default is source-style
-    edge collapse and HC smoothing. For isotropic remeshing, a missing target
-    uses the median input neurite radius as a heuristic.
+    Existing result files are never overwritten. The default applies isotropic
+    remeshing, Taubin smoothing and the mortar soma-junction fill, in that order.
+    A missing isotropic target uses the median input neurite radius as a heuristic.
     Optional geometric analysis reports findings without blocking meshing.
     ``force`` remains accepted as a compatibility alias for the default.
     """
@@ -139,8 +170,30 @@ def run_workflow(swc_path, output_dir, *, target_edge_length=None, iterations=No
         raise ValueError("iterations must be a positive integer")
     if postprocess_method not in ("standard", "isotropic"):
         raise ValueError("postprocess method must be standard or isotropic")
+    if soma_blend_width is None:
+        soma_blend_width = 3. if postprocess_method == "isotropic" else 2.
+    if soma_blend_method is None:
+        soma_blend_method = "mortar" if postprocess_method == "isotropic" else "blend"
+    if not isfinite(soma_blend_width) or not 0 <= soma_blend_width <= 4:
+        raise ValueError("soma blend width factor must be finite and between 0 and 4")
+    if soma_blend_method not in ("blend", "mortar"):
+        raise ValueError("soma blend method must be blend or mortar")
+    if smoothing not in (None, "none", "hc", "taubin"):
+        raise ValueError("smoothing must be none, hc or taubin")
+    if smoothing is None:
+        smoothing = "taubin" if postprocess_method == "isotropic" else "hc"
+    if smoothing == "none" and postprocess_method == "standard":
+        raise ValueError("standard postprocessing requires hc or taubin smoothing")
+    taubin_supplied = any(value is not None for value in (taubin_iterations, taubin_lambda, taubin_mu))
+    if smoothing != "taubin" and taubin_supplied:
+        raise ValueError("Taubin options require --smoothing taubin")
+    taubin_options = {"iterations": 10 if taubin_iterations is None else taubin_iterations,
+                      "lambda_factor": .5 if taubin_lambda is None else taubin_lambda,
+                      "mu_factor": -.53 if taubin_mu is None else taubin_mu}
+    if smoothing == "taubin":
+        _validate_taubin_options(**taubin_options)
     if postprocess_method == "standard" and (target_edge_length is not None or iterations is not None):
-        raise ValueError("target edge length and remeshing iterations require isotropic postprocessing (--isotropic)")
+        raise ValueError("target edge length and remeshing iterations require isotropic postprocessing")
     if postprocess_method == "isotropic" and iterations is None:
         iterations = 5
     if type(angular_segments) is not int or angular_segments < 3:
@@ -204,15 +257,53 @@ def run_workflow(swc_path, output_dir, *, target_edge_length=None, iterations=No
             analysis = {"performed": False, "reason": "not requested", "complete": False}
         notify("Generating the analytic surface")
         raw = assemble_redblue_neuron(tree, **meshing)
+        blend_report = None
+        prepared = None
+        if soma_blend_width and any(node.kind == 1 for node in tree.nodes.values()):
+            prepared = prepare_morphology(tree, preconditioning=meshing["preconditioning"],
+                                          alpha=meshing["pc_alpha"], beta=meshing["pc_beta"], gamma=meshing["pc_gamma"],
+                                          scale_radius=meshing["scale_radius"],
+                                          preserve_surface_roots=meshing["preserve_surface_roots"],
+                                          source_soma_centroid=meshing["source_soma_centroid"],
+                                          precondition_norm_mode=meshing["precondition_norm_mode"]).morphology
+        def blend(mesh):
+            nonlocal blend_report
+            if prepared is None:
+                blend_report = {"width_factor": soma_blend_width, "attachments": 0, "attachments_blended": 0,
+                                "vertices_moved": 0, "displacement_scale": 1.0, "max_displacement": 0.0,
+                                "method": soma_blend_method}
+                return mesh
+            notify("Blending soma-neurite junctions")
+            operation = fill_and_smooth_soma_junctions if soma_blend_method == "mortar" else blend_soma_junctions
+            result, blend_report = operation(mesh, prepared, width_factor=soma_blend_width)
+            blend_report["method"] = soma_blend_method
+            if blend_report["attachments_blended"] < blend_report["attachments"]:
+                notify("Warning: some soma attachments had no vertices in the blend region; inspect the report")
+            return result
         if postprocess_method == "standard":
-            notify("Applying source-style edge collapse and HC smoothing")
-            remesh_settings = {"method": "standard", **standard_settings()}
-            processed = standard_postprocess(raw)
+            notify(f"Applying source-style edge collapse and {smoothing.upper() if smoothing == 'hc' else 'Taubin'} smoothing")
+            remesh_settings = {"method": "standard", **standard_settings(smoothing=smoothing, taubin_options=taubin_options)}
+            processed = standard_postprocess(raw, smoothing=smoothing, taubin_options=taubin_options,
+                                             before_smoothing=blend if soma_blend_method == "blend" else None)
+            if soma_blend_method == "mortar":
+                processed = blend(processed)
         else:
             notify("Applying isotropic remeshing")
             options = {"target": target_edge_length, "iterations": iterations, "max_operations": 300000}
             remesh_settings = {"method": "isotropic", **options, "target_selection": target_selection}
             processed = isotropic_remesh(raw, **options)
+            if soma_blend_method == "blend":
+                processed = blend(processed)
+            if smoothing == "taubin":
+                notify("Applying Taubin smoothing")
+                remesh_settings["taubin_smoothing"] = taubin_options
+                processed = taubin_smooth(processed, **taubin_options)
+            elif smoothing == "hc":
+                notify("Applying HC smoothing")
+                remesh_settings["hc_smoothing"] = {"alpha": .4, "beta": .7, "iterations": 10}
+                processed = hc_smooth(processed, **remesh_settings["hc_smoothing"])
+            if soma_blend_method == "mortar":
+                processed = blend(processed)
         notify("Checking meshes and writing the report")
         raw_report = _mesh_report(raw, check_intersections)
         processed_report = _mesh_report(processed, check_intersections)
@@ -232,6 +323,7 @@ def run_workflow(swc_path, output_dir, *, target_edge_length=None, iterations=No
             "settings": {"meshing_method": "analytic", "meshing": meshing, "source_comparison_preset": match_cpp,
                          "analysis": analysis_settings if analyze else {"mode": "not_requested"},
                          "remeshing": remesh_settings,
+                         "soma_junction_blend": blend_report,
                          "check_intersections": check_intersections},
             "environment": {"python": platform.python_version(), "anamorph_version": package_version},
             "analysis": analysis, "raw": raw_report, "remeshed": processed_report,
@@ -239,6 +331,8 @@ def run_workflow(swc_path, output_dir, *, target_edge_length=None, iterations=No
             "limitations": ["Optional geometric analysis is incomplete." if analyze
                             else "Pre-meshing geometric analysis was not requested.",
                             "Postprocessing changes the surface and does not guarantee quasi-uniformity.",
+                            "Soma junction blending is an approximate local geometric adjustment."
+                            if soma_blend_width else "Soma junction blending was disabled.",
                             "Numerical intersection checks do not certify non-intersection."],
         }
         (stage/"report.md").write_text(_readable_report(report_data), encoding="utf-8")

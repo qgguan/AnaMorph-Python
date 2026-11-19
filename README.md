@@ -35,21 +35,56 @@ The workflow saves `input.swc`, `raw.obj`, `remeshed.obj`, `report.md`, and
 mesh topology, edge lengths, surface area, volume, and numerical intersection
 checks; the JSON file includes the settings and checksums.
 
-By default, postprocessing applies source-style greedy edge collapse (alpha 1.5,
-lambda 0.125, mu 0.5, depth 5), followed by ten HC smoothing iterations (alpha
-0.4, beta 0.7). These use the original default parameters and topological rule;
-the Python implementation has a 100,000-collapse work limit and may differ
-numerically. Postprocessing can substantially change the surface: compare the
-raw and processed meshes and check the area and volume in the report.
+By default, the workflow generates the analytic raw mesh, applies isotropic
+remeshing, runs ten Taubin smoothing iterations, and then applies the experimental
+local `mortar` fill to soma–neurite junctions. If no target edge length is
+specified, the median input neurite radius is used as a starting heuristic.
+Postprocessing can substantially change the surface: compare the raw and
+processed meshes and inspect area, volume, and intersection checks in the report.
 
-To use isotropic remeshing instead, select it explicitly:
+The soma-junction blend adds a small outward fillet around each primary neurite
+attachment to make the soma-to-neurite transition less abrupt. The blend is an
+approximate geometric modification, not a reconstruction of missing anatomy.
+Its width defaults to three local neurite radii and is capped at half the soma
+radius. Use `--soma-blend-width` to adjust the factor, or set it to `0` to
+disable this stage. The report records how many junctions were adjusted; the
+raw OBJ is saved before blending. Soma-free components have no soma junction to
+blend. Inspect the resulting mesh, particularly near closely spaced roots.
+
+The experimental `mortar` method fills and relaxes the attachment region after
+remeshing and smoothing, allowing local volume to increase:
 
 ```sh
-python -m anamorph workflow examples/branched.swc --output-dir uniform_results --isotropic --target-edge-length 0.14
+python -m anamorph workflow path/to/cell.swc --output-dir mortar_results --target-edge-length 0.4
 ```
 
-The target is in SWC coordinate units. If omitted for `--isotropic`, the median
-input neurite radius is used as a starting heuristic. `--iterations` controls
+This is an approximate geometric adjustment. It does not guarantee that every
+cross-section becomes wider or prevent intersections; compare it with the raw
+mesh and inspect the report. The earlier `blend` method remains available via
+`--soma-blend-method blend`; it runs before the selected smoothing stage.
+
+To use source-style edge collapse, local blending and HC smoothing instead:
+
+```sh
+python -m anamorph workflow path/to/cell.swc --output-dir standard_results --standard-postprocess
+```
+
+Taubin smoothing alternates a positive and a negative Laplacian pass in each
+iteration. Its defaults are 10 iterations, lambda 0.5 and mu -0.53. Use
+`--taubin-iterations`, `--taubin-lambda` and `--taubin-mu` to change them.
+The report records the applied parameters. It changes vertex positions and
+does not enforce volume preservation or prevent self-intersections. Use
+`--smoothing none` to omit the global smoothing pass or `--soma-blend-width 0`
+to omit the local fill.
+
+To choose a target edge length explicitly:
+
+```sh
+python -m anamorph workflow examples/branched.swc --output-dir uniform_results --target-edge-length 0.14
+```
+
+The target is in SWC coordinate units. If omitted, the median input neurite
+radius is used as a starting heuristic. `--iterations` controls
 isotropic passes. Isotropic remeshing changes the surface and does not guarantee
 uniform triangles.
 
@@ -74,6 +109,8 @@ the potentially expensive intersection checks. Inspect meshes before use.
 ```sh
 python -m anamorph generate examples/branched.swc raw.obj
 python -m anamorph remesh raw.obj processed.obj
+python -m anamorph remesh raw.obj taubin_postprocessed.obj --smoothing taubin
+python -m anamorph postprocess raw.obj taubin_only.obj --taubin-iterations 10
 python -m anamorph remesh raw.obj uniform.obj --isotropic --target-edge-length 0.14
 python -m anamorph meshstat processed.obj
 python -m anamorph meshquality processed.obj
@@ -84,9 +121,14 @@ python -m anamorph --help
 `generate` uses the analytic mesher and `generate-redblue` is an alias. A
 voxel-based approximation is available only when explicitly requested with
 `generate-voxel`; there is no automatic fallback to it. The standalone `remesh`
-command retains its input and uses the same default postprocessing as the
-workflow. For Python callers, use `anamorph.workflow.run_workflow`; pass
-`postprocess_method="isotropic"` to select the optional isotropic method.
+command retains its input and uses edge collapse and HC smoothing by default.
+Soma-junction blending requires morphology information and is applied by
+`workflow`, not by the OBJ-only `remesh` or `postprocess` commands.
+`postprocess --taubin-iterations 10` applies Taubin smoothing alone,
+without edge collapse. For Python callers, use `anamorph.taubin_smooth` to
+smooth an existing `Mesh` or `anamorph.workflow.run_workflow` with
+the default isotropic, Taubin, and mortar pipeline. Pass
+`postprocess_method="standard"` to select source-style postprocessing.
 
 See the [technical reference](docs/technical-reference.md) for additional
 commands and implementation details. Command-specific options are available via

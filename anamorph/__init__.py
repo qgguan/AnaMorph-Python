@@ -21,7 +21,7 @@ from .mesh import Mesh, MeshStatistics, read_obj
 from .geometry import Spline, partition_paths
 from .precondition import PreconditioningResult, precondition
 from .roots import adjust_soma_roots
-from .smoothing import hc_smooth, laplacian_smooth
+from .smoothing import hc_smooth, laplacian_smooth, taubin_smooth
 from .voxel import generate_voxel_mesh
 from .collapse import greedy_edge_collapse
 from .remesh import isotropic_remesh
@@ -40,7 +40,7 @@ from .redblue import (RedBlueError, RedBlueTriangulationError, SourceDelaunayLim
 
 __all__ = ["Morphology", "Node", "read_swc", "Mesh", "MeshStatistics", "read_obj",
            "Spline", "partition_paths", "PreconditioningResult", "precondition",
-           "adjust_soma_roots", "hc_smooth", "laplacian_smooth", "generate_voxel_mesh", "greedy_edge_collapse", "isotropic_remesh", "mesh_quality",
+           "adjust_soma_roots", "hc_smooth", "laplacian_smooth", "taubin_smooth", "generate_voxel_mesh", "greedy_edge_collapse", "isotropic_remesh", "mesh_quality",
            "MeshIntersection", "find_self_intersections",
            "CanalSegment", "IntersectionSolveError", "AnalyticReport", "AnalyticSegmentFlags", "analyze_analytic_partial", "assemble_redblue_neuron",
            "SourceAnalysisJob", "SourceAnalysisPlan", "plan_source_analysis_jobs",

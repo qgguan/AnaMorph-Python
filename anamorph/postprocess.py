@@ -12,17 +12,27 @@
 """Shared source-style default surface postprocessing."""
 
 from .collapse import greedy_edge_collapse
-from .smoothing import hc_smooth
+from .smoothing import hc_smooth, taubin_smooth
 
 
-def standard_settings():
-    """Return fresh copies of the C++ default parameters and Python work limit."""
-    return {"edge_collapse": {"alpha": 1.5, "area_floor": .125, "area_ceiling": .5,
-                              "depth": 5, "max_collapses": 100000, "safety": "source"},
-            "hc_smoothing": {"alpha": .4, "beta": .7, "iterations": 10}}
+def standard_settings(*, smoothing="hc", taubin_options=None):
+    """Return fresh copies of the selected smoothing and collapse parameters."""
+    settings = {"edge_collapse": {"alpha": 1.5, "area_floor": .125, "area_ceiling": .5,
+                                  "depth": 5, "max_collapses": 100000, "safety": "source"}}
+    if smoothing == "hc":
+        settings["hc_smoothing"] = {"alpha": .4, "beta": .7, "iterations": 10}
+    elif smoothing == "taubin":
+        settings["taubin_smoothing"] = dict(taubin_options or {"lambda_factor": .5, "mu_factor": -.53, "iterations": 10})
+    else:
+        raise ValueError("smoothing must be hc or taubin")
+    return settings
 
 
-def standard_postprocess(mesh):
-    settings = standard_settings()
+def standard_postprocess(mesh, *, smoothing="hc", taubin_options=None, before_smoothing=None):
+    settings = standard_settings(smoothing=smoothing, taubin_options=taubin_options)
     mesh = greedy_edge_collapse(mesh, **settings["edge_collapse"])
+    if before_smoothing is not None:
+        mesh = before_smoothing(mesh)
+    if smoothing == "taubin":
+        return taubin_smooth(mesh, **settings["taubin_smoothing"])
     return hc_smooth(mesh, **settings["hc_smoothing"])
